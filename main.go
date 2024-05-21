@@ -41,6 +41,18 @@ func main() {
 
 	params := loadWordlist(wordlist)
 	logger.Info("Loaded parameters from wordlist", "count", len(params))
+	results := DiscoverParams(requestURL, method, postData, contentType, params, chunkSize)
+	logger.Info("Total requests made", "count", totalRequests)
+	logger.Info("Valid parameters found", "count", len(results.Params), "valid", results.Params)
+
+}
+
+type Results struct {
+	Params     []string `json:"params"`
+	FormParams []string `json:"form_params"`
+}
+
+func DiscoverParams(requestURL, method, postData, contentType string, params []string, chunkSize int) Results {
 	initialResponses := makeInitialRequests(requestURL, method, postData, contentType)
 	logger.Info("Initial responses status codes", "first", initialResponses[0].StatusCode, "second", initialResponses[1].StatusCode)
 	formsParams := extractFormParams(initialResponses[0].Body)
@@ -48,9 +60,10 @@ func main() {
 
 	params = append(params, formsParams...)
 	validParams := discoverValidParams(requestURL, method, postData, contentType, params, initialResponses, chunkSize)
-	logger.Info("Total requests made", "count", totalRequests)
-	logger.Info("Valid parameters found", "count", len(validParams), "valid", validParams)
-
+	return Results{
+		Params:     validParams,
+		FormParams: formsParams,
+	}
 }
 
 type ResponseData struct {
