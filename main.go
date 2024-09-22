@@ -15,11 +15,13 @@ import (
 	"sync"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
 var totalRequests int
 var logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 var ignoreCertErrors bool
+var numBaselines = 3
 
 func main() {
 	var requestURL, method, postData, contentType, wordlist string
@@ -48,14 +50,27 @@ func main() {
 }
 
 type Results struct {
-	Params     []string `json:"params"`
-	FormParams []string `json:"form_params"`
+	Params      []string `json:"params"`
+	FormParams  []string `json:"form_params"`
+	Aborted     bool     `json:"aborted"`
+	AbortReason string   `json:"abort_reason"`
 }
 
 func DiscoverParams(requestURL, method, postData, contentType string, params []string, chunkSize int) Results {
 	initialResponses := makeInitialRequests(requestURL, method, postData, contentType)
-	logger.Info("Initial responses status codes", "first", initialResponses[0].StatusCode, "second", initialResponses[1].StatusCode)
-	formsParams := extractFormParams(initialResponses[0].Body)
+
+	// Check if baseline responses are consistent
+	if !initialResponses.AreConsistent {
+		logger.Warn("Baseline responses differ significantly. The page appears to be too dynamic. Scanning will be skipped.")
+		return Results{
+			Params:      []string{},
+			FormParams:  []string{},
+			Aborted:     true,
+			AbortReason: "Baseline responses differ significantly",
+		}
+	}
+
+	formsParams := extractFormParams(initialResponses.Responses[0].Body)
 	logger.Info("Extracted form parameters", "count", len(formsParams), "parameters", formsParams)
 
 	params = append(params, formsParams...)
@@ -70,6 +85,12 @@ type ResponseData struct {
 	Body        []byte
 	StatusCode  int
 	Reflections int
+}
+
+type InitialResponses struct {
+	Responses     []ResponseData
+	SameBody      bool
+	AreConsistent bool
 }
 
 func randomUserAgent() string {
@@ -105,14 +126,18 @@ func loadWordlist(wordlist string) []string {
 	return params
 }
 
-func makeInitialRequests(requestURL, method, postData, contentType string) []ResponseData {
-	paramSet1 := url.Values{"param1": {randomString(5)}, "param2": {randomString(5)}}
-	paramSet2 := url.Values{"param3": {randomString(5)}, "param4": {randomString(5)}}
+func makeInitialRequests(requestURL, method, postData, contentType string) InitialResponses {
+	var baselineResponses []ResponseData
+	for i := 0; i < numBaselines; i++ {
+		resp := makeRequest(requestURL, method, postData, contentType, url.Values{})
+		baselineResponses = append(baselineResponses, resp)
+	}
 
-	resp1 := makeRequest(requestURL, method, postData, contentType, paramSet1)
-	resp2 := makeRequest(requestURL, method, postData, contentType, paramSet2)
-
-	return []ResponseData{resp1, resp2}
+	return InitialResponses{
+		Responses:     baselineResponses,
+		SameBody:      baselineResponsesAreConsistent(baselineResponses, responsesAreEqual),
+		AreConsistent: baselineResponsesAreConsistent(baselineResponses, responsesAreSimilar),
+	}
 }
 
 func makeRequest(requestURL, method, postData, contentType string, params url.Values) ResponseData {
@@ -211,9 +236,9 @@ func extractFormParams(body []byte) []string {
 	return formParams
 }
 
-func discoverValidParams(requestURL, method, postData, contentType string, params []string, initialResponses []ResponseData, chunkSize int) []string {
+func discoverValidParams(requestURL, method, postData, contentType string, params []string, initialResponses InitialResponses, chunkSize int) []string {
 	parts := chunkParams(params, chunkSize)
-	validParts := filterParts(requestURL, method, postData, contentType, parts, initialResponses[0])
+	validParts := filterParts(requestURL, method, postData, contentType, parts, initialResponses)
 
 	paramSet := make(map[string]bool)
 	var validParams []string
@@ -224,7 +249,7 @@ func discoverValidParams(requestURL, method, postData, contentType string, param
 		wg.Add(1)
 		go func(part []string) {
 			defer wg.Done()
-			for _, param := range recursiveFilter(requestURL, method, postData, contentType, part, initialResponses[0]) {
+			for _, param := range recursiveFilter(requestURL, method, postData, contentType, part, initialResponses) {
 				mu.Lock()
 				if !paramSet[param] {
 					paramSet[param] = true
@@ -252,7 +277,7 @@ func chunkParams(params []string, chunkSize int) [][]string {
 	return chunks
 }
 
-func filterParts(requestURL, method, postData, contentType string, parts [][]string, initialResponse ResponseData) [][]string {
+func filterParts(requestURL, method, postData, contentType string, parts [][]string, initialResponses InitialResponses) [][]string {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var validParts [][]string
@@ -264,7 +289,7 @@ func filterParts(requestURL, method, postData, contentType string, parts [][]str
 			params := generateParams(part)
 			response := makeRequest(requestURL, method, postData, contentType, params)
 
-			if responseChanged(initialResponse, response) {
+			if responseChanged(initialResponses.Responses, response, initialResponses.SameBody) {
 				mu.Lock()
 				validParts = append(validParts, part)
 				mu.Unlock()
@@ -292,11 +317,36 @@ func randomString(n int) string {
 	return string(b)
 }
 
-func responseChanged(initial, new ResponseData) bool {
-	return initial.StatusCode != new.StatusCode || len(initial.Body) != len(new.Body) || initial.Reflections != new.Reflections
+func responseChanged(baselineResponses []ResponseData, new ResponseData, equalCheck bool) bool {
+	for _, baseline := range baselineResponses {
+		if equalCheck && responsesAreEqual(baseline, new) {
+			return false
+		} else if !equalCheck && responsesAreSimilar(baseline, new) {
+			return false
+		}
+	}
+	return true // Response is different from all baselines; significant change detected
 }
 
-func recursiveFilter(requestURL, method, postData, contentType string, params []string, initialResponse ResponseData) []string {
+func responsesAreSimilar(a, b ResponseData) bool {
+	similarityThreshold := 0.9
+	similarity := 1.0
+	if len(a.Body) != len(b.Body) {
+		similarity = computeSimilarity(a.Body, b.Body)
+	}
+
+	return a.StatusCode == b.StatusCode &&
+		a.Reflections == b.Reflections &&
+		similarity >= similarityThreshold
+}
+
+func responsesAreEqual(a, b ResponseData) bool {
+	return a.StatusCode == b.StatusCode &&
+		a.Reflections == b.Reflections &&
+		len(a.Body) == len(b.Body)
+}
+
+func recursiveFilter(requestURL, method, postData, contentType string, params []string, initialResponses InitialResponses) []string {
 	if len(params) == 1 {
 		return params
 	}
@@ -311,11 +361,46 @@ func recursiveFilter(requestURL, method, postData, contentType string, params []
 	rightResponse := makeRequest(requestURL, method, postData, contentType, rightParams)
 
 	var validParams []string
-	if responseChanged(initialResponse, leftResponse) {
-		validParams = append(validParams, recursiveFilter(requestURL, method, postData, contentType, left, initialResponse)...)
+	if responseChanged(initialResponses.Responses, leftResponse, initialResponses.SameBody) {
+		validParams = append(validParams, recursiveFilter(requestURL, method, postData, contentType, left, initialResponses)...)
 	}
-	if responseChanged(initialResponse, rightResponse) {
-		validParams = append(validParams, recursiveFilter(requestURL, method, postData, contentType, right, initialResponse)...)
+	if responseChanged(initialResponses.Responses, rightResponse, initialResponses.SameBody) {
+		validParams = append(validParams, recursiveFilter(requestURL, method, postData, contentType, right, initialResponses)...)
 	}
 	return validParams
+}
+
+func baselineResponsesAreConsistent(baselineResponses []ResponseData, compareFunc func(ResponseData, ResponseData) bool) bool {
+	for i := 0; i < len(baselineResponses); i++ {
+		for j := i + 1; j < len(baselineResponses); j++ {
+			if !compareFunc(baselineResponses[i], baselineResponses[j]) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func computeSimilarity(aBody, bBody []byte) float64 {
+	aText := string(aBody)
+	bText := string(bBody)
+
+	dmp := diffmatchpatch.New()
+	diffs := dmp.DiffMain(aText, bText, false)
+
+	distance := dmp.DiffLevenshtein(diffs)
+
+	// Calculate the maximum possible distance
+	maxLen := len(aText)
+	if len(bText) > maxLen {
+		maxLen = len(bText)
+	}
+
+	if maxLen == 0 {
+		return 1.0 // Both strings are empty, so they are identical
+	}
+
+	// Compute similarity as (1 - (distance / maxLen))
+	similarity := 1 - float64(distance)/float64(maxLen)
+	return similarity
 }
