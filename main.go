@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"io"
 	"log/slog"
@@ -19,9 +20,10 @@ import (
 )
 
 var totalRequests int
-var logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+var logger = slog.New(slog.NewTextHandler(os.Stdout, nil))
 var ignoreCertErrors bool
 var numBaselines = 3
+var reportPath string
 
 func main() {
 	var requestURL, method, postData, contentType, wordlist string
@@ -31,6 +33,7 @@ func main() {
 	flag.StringVar(&postData, "data", "", "Optional POST data")
 	flag.StringVar(&contentType, "type", "form", "Content type: form, json, xml")
 	flag.StringVar(&wordlist, "wordlist", "wordlist.txt", "Path to the wordlist file")
+	flag.StringVar(&reportPath, "report", "report.json", "Path to the output report file")
 	flag.IntVar(&chunkSize, "chunk-size", 1000, "Number of parameters to send in each request")
 	flag.BoolVar(&ignoreCertErrors, "ignore-cert", false, "Ignore SSL certificate errors")
 
@@ -46,14 +49,19 @@ func main() {
 	results := DiscoverParams(requestURL, method, postData, contentType, params, chunkSize)
 	logger.Info("Total requests made", "count", totalRequests)
 	logger.Info("Valid parameters found", "count", len(results.Params), "valid", results.Params)
+	logger.Info("Form parameters found", "count", len(results.FormParams), "parameters", results.FormParams)
+	if reportPath != "" {
+		saveReport(reportPath, results)
+	}
 
 }
 
 type Results struct {
-	Params      []string `json:"params"`
-	FormParams  []string `json:"form_params"`
-	Aborted     bool     `json:"aborted"`
-	AbortReason string   `json:"abort_reason"`
+	Params        []string `json:"params"`
+	FormParams    []string `json:"form_params"`
+	TotalRequests int      `json:"total_requests"`
+	Aborted       bool     `json:"aborted"`
+	AbortReason   string   `json:"abort_reason"`
 }
 
 func DiscoverParams(requestURL, method, postData, contentType string, params []string, chunkSize int) Results {
@@ -63,10 +71,11 @@ func DiscoverParams(requestURL, method, postData, contentType string, params []s
 	if !initialResponses.AreConsistent {
 		logger.Warn("Baseline responses differ significantly. The page appears to be too dynamic. Scanning will be skipped.")
 		return Results{
-			Params:      []string{},
-			FormParams:  []string{},
-			Aborted:     true,
-			AbortReason: "Baseline responses differ significantly",
+			Params:        []string{},
+			FormParams:    []string{},
+			Aborted:       true,
+			AbortReason:   "Baseline responses differ significantly",
+			TotalRequests: totalRequests,
 		}
 	}
 
@@ -76,8 +85,9 @@ func DiscoverParams(requestURL, method, postData, contentType string, params []s
 	params = append(params, formsParams...)
 	validParams := discoverValidParams(requestURL, method, postData, contentType, params, initialResponses, chunkSize)
 	return Results{
-		Params:     validParams,
-		FormParams: formsParams,
+		Params:        validParams,
+		FormParams:    formsParams,
+		TotalRequests: totalRequests,
 	}
 }
 
@@ -403,4 +413,27 @@ func computeSimilarity(aBody, bBody []byte) float64 {
 	// Compute similarity as (1 - (distance / maxLen))
 	similarity := 1 - float64(distance)/float64(maxLen)
 	return similarity
+}
+
+func saveReport(reportPath string, results Results) {
+	jsonData, err := json.MarshalIndent(results, "", "  ")
+	if err != nil {
+		logger.Error("Error marshalling results to JSON", slog.String("error", err.Error()))
+		return
+	}
+
+	file, err := os.Create(reportPath)
+	if err != nil {
+		logger.Error("Error creating/opening report file", slog.String("error", err.Error()), slog.String("path", reportPath))
+		return
+	}
+	defer file.Close()
+
+	_, err = file.Write(jsonData)
+	if err != nil {
+		logger.Error("Error writing JSON to file", slog.String("error", err.Error()), slog.String("path", reportPath))
+		return
+	}
+
+	logger.Info("Report saved successfully", slog.String("path", reportPath))
 }
