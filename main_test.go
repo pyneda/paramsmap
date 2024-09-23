@@ -124,7 +124,14 @@ func TestDiscoverParams(t *testing.T) {
 
 	params := []string{"param1", "param2", "param3", "param4", "param5", "param6", "page", "query", "session", "user", "token", "mode", "random1", "random2", "random3", "random4", "random5", "player", "team", "score"}
 
-	results := DiscoverParams("http://localhost:8181", "GET", "", "", params, 5)
+	request := Request{
+		URL:         "http://localhost:8181",
+		Method:      "GET",
+		Data:        "",
+		ContentType: "",
+	}
+
+	results := DiscoverParams(request, params, 5)
 
 	expectedParams := []string{"page", "query", "session", "user", "token", "mode"}
 
@@ -150,7 +157,14 @@ func TestDiscoverParamsDynamic(t *testing.T) {
 
 	params := []string{"page", "param1", "param2", "param3", "param4", "param5", "param6", "query", "session", "user", "token", "mode", "random1", "random2", "random3", "random4", "random5", "player", "team", "score"}
 
-	results := DiscoverParams("http://localhost:8181/dynamic", "GET", "", "", params, 5)
+	request := Request{
+		URL:         "http://localhost:8181/dynamic",
+		Method:      "GET",
+		Data:        "",
+		ContentType: "",
+	}
+
+	results := DiscoverParams(request, params, 5)
 
 	expectedParams := []string{"page", "query", "session", "user", "token", "mode"}
 
@@ -176,7 +190,14 @@ func TestDiscoverParamsDynamicReflected(t *testing.T) {
 
 	params := []string{"param1", "param2", "param3", "param4", "param5", "param6", "page", "query", "session", "user", "token", "mode", "random1", "random2", "random3", "random4", "random5", "player", "team", "score"}
 
-	results := DiscoverParams("http://localhost:8181/dynamic-reflected", "GET", "", "", params, 5)
+	request := Request{
+		URL:         "http://localhost:8181/dynamic-reflected",
+		Method:      "GET",
+		Data:        "",
+		ContentType: "",
+	}
+
+	results := DiscoverParams(request, params, 5)
 
 	expectedParams := []string{"page", "query", "session", "user", "token", "mode"}
 	for _, param := range expectedParams {
@@ -201,7 +222,14 @@ func TestDiscoverParamsDynamicUnstable(t *testing.T) {
 
 	params := []string{"param1", "param2", "param3", "random1", "random2", "user", "token"}
 
-	results := DiscoverParams("http://localhost:8181/unstable", "GET", "", "", params, 5)
+	request := Request{
+		URL:         "http://localhost:8181/unstable",
+		Method:      "GET",
+		Data:        "",
+		ContentType: "",
+	}
+
+	results := DiscoverParams(request, params, 5)
 
 	if !results.Aborted {
 		t.Errorf("Expected the scan to be aborted due to inconsistent responses, but it was not.")
