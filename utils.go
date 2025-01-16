@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -69,12 +70,12 @@ func countReflections(params url.Values, body []byte) int {
 	return count
 }
 
-func createHTTPClient() *http.Client {
+func createHTTPClient(timeout int) *http.Client {
 	if ignoreCertErrors {
 		tr := &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		}
-		return &http.Client{Transport: tr}
+		return &http.Client{Transport: tr, Timeout: time.Duration(timeout) * time.Second}
 	}
 	return &http.Client{}
 }

@@ -21,7 +21,7 @@ var reportPath string
 
 func main() {
 	var requestURL, method, postData, contentType, wordlist string
-	var chunkSize int
+	var chunkSize, timeout int
 	flag.StringVar(&requestURL, "url", "", "The URL to make the request to")
 	flag.StringVar(&method, "method", "GET", "HTTP method to use")
 	flag.StringVar(&postData, "data", "", "Optional POST data")
@@ -29,6 +29,7 @@ func main() {
 	flag.StringVar(&wordlist, "wordlist", "wordlist.txt", "Path to the wordlist file")
 	flag.StringVar(&reportPath, "report", "report.json", "Path to the output report file")
 	flag.IntVar(&chunkSize, "chunk-size", 1000, "Number of parameters to send in each request")
+	flag.IntVar(&timeout, "timeout", 10, "Request timeout in seconds")
 	flag.BoolVar(&ignoreCertErrors, "ignore-cert", false, "Ignore SSL certificate errors")
 
 	flag.Parse()
@@ -45,6 +46,7 @@ func main() {
 		Method:      method,
 		Data:        postData,
 		ContentType: contentType,
+		Timeout:     timeout,
 	}
 	results := DiscoverParams(request, params, chunkSize)
 	logger.Info("Total requests made", "count", totalRequests)
@@ -61,6 +63,7 @@ type Request struct {
 	Method      string `json:"method"`
 	Data        string `json:"data"`
 	ContentType string `json:"content_type"`
+	Timeout     int    `json:"timeout"`
 }
 
 type Results struct {
@@ -244,7 +247,7 @@ func makeRequest(request Request, params url.Values) ResponseData {
 		logger.Error("Failed to create request", "error", err)
 	}
 
-	client := createHTTPClient()
+	client := createHTTPClient(request.Timeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		logger.Error("Failed to make request", "error", err)
