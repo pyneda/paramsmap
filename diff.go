@@ -2,33 +2,57 @@ package main
 
 import "github.com/sergi/go-diff/diffmatchpatch"
 
-func responseChanged(baselineResponses []ResponseData, new ResponseData, equalCheck bool) bool {
+func responseChanged(baselineResponses []ResponseData, new ResponseData, equalCheck bool, threshold float64) bool {
 	for _, baseline := range baselineResponses {
 		if equalCheck && responsesAreEqual(baseline, new) {
 			return false
-		} else if !equalCheck && responsesAreSimilar(baseline, new) {
+		} else if !equalCheck && responsesAreSimilar(baseline, new, threshold) {
 			return false
 		}
 	}
 	return true // Response is different from all baselines; significant change detected
 }
 
-func responsesAreSimilar(a, b ResponseData) bool {
-	similarityThreshold := 0.9
+// responseChangedIgnoringReflections checks if the response changed compared to
+// baselines, but ignores the Reflections field. Used for testing form parameters
+// that are already present in baseline HTML to avoid false positives.
+func responseChangedIgnoringReflections(baselineResponses []ResponseData, new ResponseData, sameBody bool, threshold float64) bool {
+	for _, baseline := range baselineResponses {
+		if baseline.StatusCode != new.StatusCode {
+			continue
+		}
+		if sameBody {
+			if baseline.BodyHash == new.BodyHash {
+				return false
+			}
+		} else {
+			if baseline.BodyHash == new.BodyHash {
+				return false
+			}
+			similarity := computeSimilarity(baseline.Body, new.Body)
+			if similarity >= threshold {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func responsesAreSimilar(a, b ResponseData, threshold float64) bool {
 	similarity := 1.0
-	if len(a.Body) != len(b.Body) {
+	if a.BodyHash != b.BodyHash {
 		similarity = computeSimilarity(a.Body, b.Body)
 	}
 
 	return a.StatusCode == b.StatusCode &&
 		a.Reflections == b.Reflections &&
-		similarity >= similarityThreshold
+		similarity >= threshold
 }
 
 func responsesAreEqual(a, b ResponseData) bool {
 	return a.StatusCode == b.StatusCode &&
 		a.Reflections == b.Reflections &&
-		len(a.Body) == len(b.Body)
+		a.BodyHash == b.BodyHash
 }
 
 func baselineResponsesAreConsistent(baselineResponses []ResponseData, compareFunc func(ResponseData, ResponseData) bool) bool {

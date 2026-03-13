@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -33,10 +34,15 @@ func loadWordlist(wordlist string) []string {
 	}
 	defer file.Close()
 
+	seen := make(map[string]bool)
 	var params []string
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		params = append(params, scanner.Text())
+		param := strings.TrimSpace(scanner.Text())
+		if param != "" && !seen[param] {
+			seen[param] = true
+			params = append(params, param)
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -70,14 +76,15 @@ func countReflections(params url.Values, body []byte) int {
 	return count
 }
 
-func createHTTPClient(timeout int) *http.Client {
+func createHTTPClient(timeout int, ignoreCertErrors bool) *http.Client {
+	t := time.Duration(timeout) * time.Second
 	if ignoreCertErrors {
 		tr := &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		}
-		return &http.Client{Transport: tr, Timeout: time.Duration(timeout) * time.Second}
+		return &http.Client{Transport: tr, Timeout: t}
 	}
-	return &http.Client{}
+	return &http.Client{Timeout: t}
 }
 
 func generateParams(params []string) url.Values {
